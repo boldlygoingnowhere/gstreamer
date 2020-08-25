@@ -192,6 +192,14 @@
 GST_DEBUG_CATEGORY_STATIC (gst_base_parse_debug);
 #define GST_CAT_DEFAULT gst_base_parse_debug
 
+/*
+ * Herospeed IP cameras typically send SEI frames preceding each I frame, but with the same timestamp.
+ * h264depay passes through SEI frames whereas it does not pass through SPS/PPS frames.
+ * Hence, frames with duplicate timestamps need to be handled to ensure that an invalid PTS is not set by GStreamer parsers (e.g. h264parse),
+ * otherwise most muxers (e.g. qtmux/mp4mux) will emit "Buffer has no PTS" error and stop.
+ */
+#define OSL_HANDLE_DUPLICATE_TIMESTAMPS 1
+
 /* Supported formats */
 static const GstFormat fmtlist[] = {
   GST_FORMAT_DEFAULT,
@@ -3190,6 +3198,17 @@ gst_base_parse_chain (GstPad * pad, GstObject * parent, GstBuffer * buffer)
      * but interpolate in between */
     pts = gst_adapter_prev_pts (parse->priv->adapter, NULL);
     dts = gst_adapter_prev_dts (parse->priv->adapter, NULL);
+#if OSL_HANDLE_DUPLICATE_TIMESTAMPS
+    if (GST_CLOCK_TIME_IS_VALID (pts)) {
+      parse->priv->prev_pts = parse->priv->next_pts = pts;
+      updated_prev_pts = TRUE;
+    }
+
+    if (GST_CLOCK_TIME_IS_VALID (dts)) {
+      parse->priv->prev_dts = parse->priv->next_dts = dts;
+      parse->priv->prev_dts_from_pts = FALSE;
+    }
+#else
     if (GST_CLOCK_TIME_IS_VALID (pts) && (parse->priv->prev_pts != pts)) {
       parse->priv->prev_pts = parse->priv->next_pts = pts;
       updated_prev_pts = TRUE;
@@ -3199,6 +3218,7 @@ gst_base_parse_chain (GstPad * pad, GstObject * parent, GstBuffer * buffer)
       parse->priv->prev_dts = parse->priv->next_dts = dts;
       parse->priv->prev_dts_from_pts = FALSE;
     }
+#endif
 
     /* we can mess with, erm interpolate, timestamps,
      * and incoming stuff has PTS but no DTS seen so far,
@@ -4878,6 +4898,15 @@ gst_base_parse_set_ts_at_offset (GstBaseParse * parse, gsize offset)
         "offset adapter timestamps dts=%" GST_TIME_FORMAT " pts=%"
         GST_TIME_FORMAT, GST_TIME_ARGS (dts), GST_TIME_ARGS (pts));
   }
+#if OSL_HANDLE_DUPLICATE_TIMESTAMPS
+  if (GST_CLOCK_TIME_IS_VALID (pts))
+    parse->priv->prev_pts = parse->priv->next_pts = pts;
+
+  if (GST_CLOCK_TIME_IS_VALID (dts)) {
+    parse->priv->prev_dts = parse->priv->next_dts = dts;
+    parse->priv->prev_dts_from_pts = FALSE;
+  }
+#else
   if (GST_CLOCK_TIME_IS_VALID (pts) && (parse->priv->prev_pts != pts))
     parse->priv->prev_pts = parse->priv->next_pts = pts;
 
@@ -4885,6 +4914,7 @@ gst_base_parse_set_ts_at_offset (GstBaseParse * parse, gsize offset)
     parse->priv->prev_dts = parse->priv->next_dts = dts;
     parse->priv->prev_dts_from_pts = FALSE;
   }
+#endif
 }
 
 /**
